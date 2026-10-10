@@ -114,7 +114,8 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
             BackSession currentSession = sessions.get(chatId);
             if (currentSession != null
-                    && (currentSession.stage == Stage.LOADING || currentSession.stage == Stage.FORWARDING)) {
+                    && (currentSession.stage == Stage.CREATING || currentSession.stage == Stage.LOADING
+                    || currentSession.stage == Stage.FORWARDING)) {
                 sendText(chatId, "A backup is already running. Send /cancel before starting another.");
                 return;
             }
@@ -145,16 +146,29 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         if (session.stage == Stage.SOURCE) {
             try {
                 session.sourceUsername = parsePublicUsername(text);
+                HistoryForwarder.PublicChat source = historyForwarder.findPublicChat(session.sourceUsername);
+                session.sourceTitle = source.title();
+                session.sourceChatId = source.chatId();
                 session.stage = Stage.DESTINATION;
                 sendText(chatId,
-                        "Now send the destination channel username or t.me link. Both the bot and the Telegram account logged in at startup must be able to post there; the bot also needs Edit Messages permission.");
+                        "Send an existing destination channel username or t.me link, or send /new to create a channel named \"مخزن - "
+                                + session.sourceTitle + "\".");
             } catch (IllegalArgumentException exception) {
                 sendText(chatId, exception.getMessage());
+            } catch (Exception exception) {
+                sendText(chatId, "Could not find that public source channel.");
+                LOGGER.log(Level.WARNING, "Could not look up source channel @" + session.sourceUsername + ".", exception);
             }
             return;
         }
 
         if (session.stage == Stage.DESTINATION) {
+            if ("/new".equalsIgnoreCase(text)) {
+                session.stage = Stage.CREATING;
+                sendText(chatId, "Creating the new channel and adding the bot. This may take a moment.");
+                jobExecutor.execute(() -> createDestinationAndLoad(chatId, session));
+                return;
+            }
             try {
                 session.destinationUsername = "@" + parsePublicUsername(text);
                 if (session.destinationUsername.equalsIgnoreCase("@" + session.sourceUsername)) {
@@ -171,6 +185,42 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                         "Could not verify the destination. Make sure it is public and the bot is an admin with Post Messages and Edit Messages permissions.");
             }
         }
+    }
+
+    private void createDestinationAndLoad(long chatId, BackSession session) {
+        try {
+            if (sessions.get(chatId) != session) {
+                return;
+            }
+            User bot = execute(new GetMe());
+            String title = channelTitle("مخزن - " + session.sourceTitle);
+            HistoryForwarder.PublicChat destination =
+                    historyForwarder.createChannelAndPromoteBot(title, bot.getId());
+            session.destinationChatId = destination.chatId();
+            session.destinationUsername = Long.toString(destination.chatId());
+            if (sessions.get(chatId) != session) {
+                sendText(chatId, "Created channel \"" + title
+                        + "\", but this backup was cancelled before it could start.");
+                return;
+            }
+            validateDestination(session.destinationUsername);
+            sendText(chatId, "Created \"" + title + "\" and added the bot. Reading source history now.");
+            session.stage = Stage.LOADING;
+            loadHistory(chatId, session);
+        } catch (Exception exception) {
+            sessions.remove(chatId, session);
+            sendText(chatId, "Could not create the destination channel or configure the bot. See the terminal for details.");
+            LOGGER.log(Level.WARNING, "Could not create and configure a destination channel.", exception);
+        }
+    }
+
+    private static String channelTitle(String title) {
+        int maximumCodePoints = 128;
+        int codePointCount = title.codePointCount(0, title.length());
+        if (codePointCount <= maximumCodePoints) {
+            return title;
+        }
+        return title.substring(0, title.offsetByCodePoints(0, maximumCodePoints));
     }
 
     private void handleChannelDeleteCommand(Message message) {
@@ -339,7 +389,9 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             }
             session.sourceTitle = history.title();
             session.sourceChatId = history.sourceChatId();
-            session.destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
+            if (session.destinationChatId == 0) {
+                session.destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
+            }
             Optional<BackupCheckpointStore.Checkpoint> savedCheckpoint = checkpointStore.load(
                     session.sourceChatId, session.destinationChatId);
             if (savedCheckpoint.isPresent()) {
@@ -541,6 +593,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
     private enum Stage {
         SOURCE,
         DESTINATION,
+        CREATING,
         LOADING,
         CONFIRM,
         FORWARDING

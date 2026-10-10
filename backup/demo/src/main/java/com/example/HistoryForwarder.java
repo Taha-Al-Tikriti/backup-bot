@@ -41,8 +41,7 @@ public final class HistoryForwarder implements AutoCloseable {
     }
 
     public ChannelHistory readMessageIds(String publicUsername, BooleanSupplier shouldContinue) throws Exception {
-        TdApi.Chat source = client.send(new TdApi.SearchPublicChat(publicUsername))
-                .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        PublicChat source = findPublicChat(publicUsername);
         Set<Long> newestFirst = new LinkedHashSet<>();
         long fromMessageId = 0;
 
@@ -51,7 +50,7 @@ public final class HistoryForwarder implements AutoCloseable {
                 throw new java.util.concurrent.CancellationException();
             }
             TdApi.Messages page = client.send(new TdApi.GetChatHistory(
-                    source.id, fromMessageId, 0, HISTORY_PAGE_SIZE, false))
+                    source.chatId(), fromMessageId, 0, HISTORY_PAGE_SIZE, false))
                     .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
             if (page.messages.length == 0) {
                 break;
@@ -71,14 +70,44 @@ public final class HistoryForwarder implements AutoCloseable {
 
         List<Long> oldestFirst = new ArrayList<>(newestFirst);
         Collections.reverse(oldestFirst);
-        String title = source.title == null || source.title.isBlank() ? "@" + publicUsername : source.title;
-        return new ChannelHistory(title, source.id, List.copyOf(oldestFirst));
+        return new ChannelHistory(source.title(), source.chatId(), List.copyOf(oldestFirst));
     }
 
     public long findPublicChatId(String publicUsername) throws Exception {
+        return findPublicChat(publicUsername).chatId();
+    }
+
+    public PublicChat findPublicChat(String publicUsername) throws Exception {
         TdApi.Chat chat = client.send(new TdApi.SearchPublicChat(publicUsername))
                 .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-        return chat.id;
+        String title = chat.title == null || chat.title.isBlank() ? "@" + publicUsername : chat.title;
+        return new PublicChat(chat.id, title);
+    }
+
+    public PublicChat createChannelAndPromoteBot(String title, long botUserId) throws Exception {
+        TdApi.CreateNewSupergroupChat create = new TdApi.CreateNewSupergroupChat();
+        create.title = title;
+        create.isChannel = true;
+        create.description = "";
+        TdApi.Chat chat = client.send(create).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+
+        TdApi.FailedToAddMembers addResult = client.send(new TdApi.AddChatMember(chat.id, botUserId, 0))
+                .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        if (addResult.failedToAddMembers.length > 0) {
+            throw new IllegalStateException("Telegram could not add the bot to the new channel.");
+        }
+
+        TdApi.ChatAdministratorRights rights = new TdApi.ChatAdministratorRights();
+        rights.canManageChat = true;
+        rights.canPostMessages = true;
+        rights.canEditMessages = true;
+        rights.canDeleteMessages = true;
+        rights.canPinMessages = true;
+        TdApi.SetChatMemberStatus promote = new TdApi.SetChatMemberStatus(
+                chat.id, new TdApi.MessageSenderUser(botUserId),
+                new TdApi.ChatMemberStatusAdministrator(false, rights));
+        client.send(promote).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        return new PublicChat(chat.id, chat.title);
     }
 
     public ForwardResult forwardMessages(long sourceChatId, long destinationChatId, List<Long> messageIds)
@@ -143,6 +172,9 @@ public final class HistoryForwarder implements AutoCloseable {
         public int forwarded() {
             return forwardedSourceMessageIds.size();
         }
+    }
+
+    public record PublicChat(long chatId, String title) {
     }
 
     public record ChannelHistory(String title, long sourceChatId, List<Long> messageIds) {
