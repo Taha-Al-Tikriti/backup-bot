@@ -194,6 +194,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
     private void forwardHistory(long chatId, BackSession session) {
         int forwarded = 0;
+        int skipped = 0;
         try {
             if (sessions.get(chatId) != session) {
                 return;
@@ -214,8 +215,10 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 }
 
                 int end = Math.min(start + FORWARD_BATCH_SIZE, session.messageIds.size());
-                forwarded += historyForwarder.forwardMessages(session.sourceChatId, destinationChatId,
-                        session.messageIds.subList(start, end));
+                HistoryForwarder.ForwardResult result = historyForwarder.forwardMessages(
+                        session.sourceChatId, destinationChatId, session.messageIds.subList(start, end));
+                forwarded += result.forwarded();
+                skipped += result.skipped();
 
                 if (end < session.messageIds.size()) {
                     Thread.sleep(BATCH_DELAY_MILLIS);
@@ -225,7 +228,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 }
             }
             sendText(chatId, "Finished. Forwarded " + forwarded + " of " + session.messageIds.size()
-                    + " posts. Telegram may skip deleted or protected posts.");
+                    + " posts; Telegram could not forward " + skipped + ".");
         } catch (Exception exception) {
             sendText(chatId, "Forwarding stopped after " + forwarded
                     + " posts. Check the source and destination permissions, then start again.");
