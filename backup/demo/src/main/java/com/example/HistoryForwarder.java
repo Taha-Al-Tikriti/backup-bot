@@ -12,6 +12,7 @@ import it.tdlight.jni.TdApi;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -88,16 +89,60 @@ public final class HistoryForwarder implements AutoCloseable {
         request.messageIds = messageIds.stream().mapToLong(Long::longValue).toArray();
         request.options = new TdApi.MessageSendOptions();
         TdApi.Messages result = client.send(request).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-        int forwarded = 0;
-        for (TdApi.Message message : result.messages) {
+        List<Long> forwardedSourceMessageIds = new ArrayList<>();
+        for (int index = 0; index < result.messages.length && index < messageIds.size(); index++) {
+            TdApi.Message message = result.messages[index];
             if (message != null) {
-                forwarded++;
+                forwardedSourceMessageIds.add(messageIds.get(index));
             }
         }
-        return new ForwardResult(forwarded, result.messages.length - forwarded);
+        return new ForwardResult(List.copyOf(forwardedSourceMessageIds),
+                messageIds.size() - forwardedSourceMessageIds.size());
     }
 
-    public record ForwardResult(int forwarded, int skipped) {
+    public Set<Long> findForwardedSourceMessageIds(long sourceChatId, long destinationChatId,
+                                                   List<Long> expectedMessageIds,
+                                                   BooleanSupplier shouldContinue) throws Exception {
+        Set<Long> expected = new HashSet<>(expectedMessageIds);
+        Set<Long> found = new HashSet<>();
+        long fromMessageId = 0;
+
+        while (found.size() < expected.size()) {
+            if (!shouldContinue.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException();
+            }
+            TdApi.Messages page = client.send(new TdApi.GetChatHistory(
+                    destinationChatId, fromMessageId, 0, HISTORY_PAGE_SIZE, false))
+                    .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+            if (page.messages.length == 0) {
+                break;
+            }
+
+            long nextFromMessageId = page.messages[page.messages.length - 1].id;
+            if (nextFromMessageId == fromMessageId) {
+                break;
+            }
+            for (TdApi.Message message : page.messages) {
+                if (message.forwardInfo != null
+                        && message.forwardInfo.origin instanceof TdApi.MessageOriginChannel origin
+                        && origin.chatId == sourceChatId
+                        && expected.contains(origin.messageId)) {
+                    found.add(origin.messageId);
+                }
+            }
+            fromMessageId = nextFromMessageId;
+        }
+        return Set.copyOf(found);
+    }
+
+    public record ForwardResult(List<Long> forwardedSourceMessageIds, int skipped) {
+        public ForwardResult {
+            forwardedSourceMessageIds = List.copyOf(forwardedSourceMessageIds);
+        }
+
+        public int forwarded() {
+            return forwardedSourceMessageIds.size();
+        }
     }
 
     public record ChannelHistory(String title, long sourceChatId, List<Long> messageIds) {

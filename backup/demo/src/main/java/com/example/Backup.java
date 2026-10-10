@@ -7,6 +7,7 @@ import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChat;
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
 import org.telegram.telegrambots.meta.api.methods.pinnedmessages.PinChatMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessages;
 import org.telegram.telegrambots.meta.api.objects.Chat;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.User;
@@ -17,8 +18,14 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,11 +35,16 @@ import java.util.logging.Logger;
 public class Backup extends TelegramLongPollingBot implements AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger(Backup.class.getName());
     private static final int FORWARD_BATCH_SIZE = 100;
+    private static final int DELETE_BATCH_SIZE = 100;
+    private static final int MAX_DELETE_RANGE = 10_000;
+    private static final long DELETE_CONFIRMATION_TTL_MILLIS = 10 * 60 * 1000;
     private static final long BATCH_DELAY_MILLIS = 4000;
 
     private final String botUsername;
     private final HistoryForwarder historyForwarder;
+    private final BackupCheckpointStore checkpointStore = new BackupCheckpointStore();
     private final Map<Long, BackSession> sessions = new ConcurrentHashMap<>();
+    private final Map<String, PendingDelete> pendingDeletes = new ConcurrentHashMap<>();
     private final ExecutorService jobExecutor = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "telegram-backup-job");
         thread.setDaemon(true);
@@ -52,15 +64,29 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
     @Override
     public void onUpdateReceived(Update update) {
-        if (update.getMessage() == null || update.getMessage().getText() == null
-                || update.getMessage().getFrom() == null) {
+        if (update.getChannelPost() != null) {
+            handleChannelDeleteCommand(update.getChannelPost());
             return;
         }
 
-        long chatId = update.getMessage().getChatId();
-        long userId = update.getMessage().getFrom().getId();
-        String text = update.getMessage().getText().trim();
+        Message message = update.getMessage();
+        if (message == null || message.getText() == null || message.getFrom() == null) {
+            return;
+        }
+
+        long chatId = message.getChatId();
+        long userId = message.getFrom().getId();
+        String text = message.getText().trim();
         if (chatId != userId) {
+            return;
+        }
+
+        if (text.startsWith("/confirm_delete ")) {
+            confirmDelete(chatId, userId, text.substring("/confirm_delete ".length()).trim());
+            return;
+        }
+        if (text.startsWith("/cancel_delete ")) {
+            cancelDelete(chatId, userId, text.substring("/cancel_delete ".length()).trim());
             return;
         }
 
@@ -103,10 +129,16 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             return;
         }
 
-        if ("/confirm".equals(text) && session.stage == Stage.CONFIRM) {
+        if (("/confirm".equals(text) || "/resume".equals(text)) && session.stage == Stage.CONFIRM) {
+            boolean resume = "/resume".equals(text);
+            if (resume && session.checkpoint == null) {
+                sendText(chatId, "There is no compatible saved backup to resume. Reply /confirm to start from the beginning.");
+                return;
+            }
             session.stage = Stage.FORWARDING;
-            sendText(chatId, "Forwarding started. Send /cancel to stop.");
-            jobExecutor.execute(() -> forwardHistory(chatId, session));
+            sendText(chatId, resume ? "Resuming backup from its saved checkpoint."
+                    : "Forwarding started from the oldest post. Send /cancel to stop.");
+            jobExecutor.execute(() -> forwardHistory(chatId, session, resume));
             return;
         }
 
@@ -139,6 +171,135 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                         "Could not verify the destination. Make sure it is public and the bot is an admin with Post Messages and Edit Messages permissions.");
             }
         }
+    }
+
+    private void handleChannelDeleteCommand(Message message) {
+        String text = message.getText();
+        if (text == null || !text.matches("(?is)^/delete(?:@" + botUsername + ")?(?:\\s|$).*")) {
+            return;
+        }
+
+        if (message.getChat() == null || !message.getChat().isChannelChat()) {
+            return;
+        }
+        if (!text.matches("(?is)^/delete(?:@" + botUsername + ")?\\s+\\d+\\s+\\d+$")) {
+            sendText(message.getChatId(), "Usage: /delete <first_message_id> <last_message_id>.");
+            return;
+        }
+
+        Long configuredAdmin = configuredAdminId();
+        if (configuredAdmin == null) {
+            sendText(message.getChatId(), "Deletion is disabled: set BACKUP_ADMIN_USER_ID first.");
+            return;
+        }
+
+        String token = null;
+        try {
+            String[] parts = text.trim().split("\\s+");
+            long firstId = Long.parseLong(parts[1]);
+            long lastId = Long.parseLong(parts[2]);
+            long count = lastId - firstId + 1;
+            if (firstId <= 0 || lastId < firstId || lastId > Integer.MAX_VALUE
+                    || count > MAX_DELETE_RANGE) {
+                sendText(message.getChatId(), "Use /delete <first_id> <last_id>; the inclusive range must be 1 to "
+                        + MAX_DELETE_RANGE + " messages.");
+                return;
+            }
+
+            validateCanDelete(message.getChat());
+            token = UUID.randomUUID().toString();
+            pendingDeletes.put(token, new PendingDelete(message.getChatId(), (int) firstId,
+                    (int) lastId, System.currentTimeMillis() + DELETE_CONFIRMATION_TTL_MILLIS));
+            pendingDeletes.entrySet().removeIf(entry ->
+                    entry.getValue().expiresAtMillis() < System.currentTimeMillis());
+            sendTextChecked(configuredAdmin,
+                    "Deletion requested in " + message.getChat().getTitle() + " for message IDs "
+                            + firstId + " through " + lastId + " (" + count + " messages).\n"
+                            + "Confirm within 10 minutes with:\n/confirm_delete " + token
+                            + "\nCancel with:\n/cancel_delete " + token);
+            sendText(message.getChatId(), "Deletion request sent to the configured admin for private confirmation.");
+        } catch (NumberFormatException exception) {
+            sendText(message.getChatId(), "Message IDs must be whole numbers.");
+        } catch (IllegalArgumentException exception) {
+            sendText(message.getChatId(), exception.getMessage());
+        } catch (TelegramApiException exception) {
+            if (token != null) {
+                pendingDeletes.remove(token);
+            }
+            sendText(message.getChatId(),
+                    "Could not queue deletion. Confirm the bot is an administrator with Delete Messages permission and that the configured admin has opened its private chat.");
+            LOGGER.log(Level.WARNING, "Could not queue a channel deletion request.", exception);
+        }
+    }
+
+    private void validateCanDelete(Chat chat) throws TelegramApiException {
+        User bot = execute(new GetMe());
+        GetChatMember getMember = new GetChatMember();
+        getMember.setChatId(Long.toString(chat.getId()));
+        getMember.setUserId(bot.getId());
+        ChatMember member = execute(getMember);
+        if (!(member instanceof ChatMemberAdministrator administrator)
+                || !Boolean.TRUE.equals(administrator.getCanDeleteMessages())) {
+            throw new IllegalArgumentException("The bot must be a channel administrator with Delete Messages permission.");
+        }
+    }
+
+    private void confirmDelete(long chatId, long userId, String token) {
+        Long allowedUserId = configuredAdminId();
+        if (allowedUserId == null || allowedUserId != userId) {
+            sendText(chatId, "You are not allowed to confirm deletions.");
+            return;
+        }
+        PendingDelete pending = pendingDeletes.remove(token);
+        if (pending == null || pending.expiresAtMillis() < System.currentTimeMillis()) {
+            sendText(chatId, "That deletion request is missing or has expired. Submit the channel command again.");
+            return;
+        }
+        sendText(chatId, "Deleting the requested message range.");
+        jobExecutor.execute(() -> deleteMessageRange(chatId, pending));
+    }
+
+    private void cancelDelete(long chatId, long userId, String token) {
+        Long allowedUserId = configuredAdminId();
+        if (allowedUserId == null || allowedUserId != userId) {
+            sendText(chatId, "You are not allowed to cancel deletion requests.");
+            return;
+        }
+        PendingDelete pending = pendingDeletes.remove(token);
+        sendText(chatId, pending == null ? "That deletion request is missing or has expired."
+                : "Deletion request cancelled.");
+    }
+
+    private void deleteMessageRange(long adminChatId, PendingDelete pending) {
+        int deletedInSuccessfulBatches = 0;
+        try {
+            for (long start = pending.firstMessageId(); start <= pending.lastMessageId();
+                    start += DELETE_BATCH_SIZE) {
+                int end = (int) Math.min(start + DELETE_BATCH_SIZE - 1L, pending.lastMessageId());
+                List<Integer> messageIds = new ArrayList<>(end - (int) start + 1);
+                for (int messageId = (int) start; messageId <= end; messageId++) {
+                    messageIds.add(messageId);
+                }
+                DeleteMessages request = new DeleteMessages();
+                request.setChatId(Long.toString(pending.chatId()));
+                request.setMessageIds(messageIds);
+                if (!Boolean.TRUE.equals(execute(request))) {
+                    throw new TelegramApiException("Telegram did not confirm the delete request.");
+                }
+                deletedInSuccessfulBatches += messageIds.size();
+            }
+            sendText(adminChatId, "Telegram accepted delete requests for "
+                    + deletedInSuccessfulBatches + " message IDs. Messages unavailable or not deletable may be skipped.");
+        } catch (Exception exception) {
+            sendText(adminChatId, "Deletion stopped after successful requests covering "
+                    + deletedInSuccessfulBatches + " message IDs. Check the channel and permissions, then retry.");
+            LOGGER.log(Level.WARNING, "Channel message deletion failed after "
+                    + deletedInSuccessfulBatches + " requested IDs.", exception);
+        }
+    }
+
+    private void sendTextChecked(long chatId, String text) throws TelegramApiException {
+        execute(SendMessage.builder().chatId(Long.toString(chatId)).text(text).build());
     }
 
     private void validateDestination(String destination) throws TelegramApiException {
@@ -178,10 +339,27 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             }
             session.sourceTitle = history.title();
             session.sourceChatId = history.sourceChatId();
-            session.messageIds = messageIds;
+            session.destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
+            Optional<BackupCheckpointStore.Checkpoint> savedCheckpoint = checkpointStore.load(
+                    session.sourceChatId, session.destinationChatId);
+            if (savedCheckpoint.isPresent()) {
+                BackupCheckpointStore.Checkpoint saved = savedCheckpoint.get();
+                TreeSet<Long> allMessageIds = new TreeSet<>(saved.messageIds());
+                allMessageIds.addAll(messageIds);
+                session.messageIds = List.copyOf(allMessageIds);
+                session.checkpoint = new BackupCheckpointStore.Checkpoint(
+                        saved.sourceChatId(), saved.destinationChatId(), session.messageIds,
+                        Math.min(saved.nextIndex(), session.messageIds.size()), saved.headingMessageId());
+            } else {
+                session.messageIds = messageIds;
+            }
             session.stage = Stage.CONFIRM;
+            String resumeInstruction = session.checkpoint == null ? ""
+                    : " A saved checkpoint exists at " + session.checkpoint.nextIndex() + " of "
+                    + session.messageIds.size() + "; reply /resume to continue it, or /confirm to start over.";
             sendText(chatId, "Found " + messageIds.size()
-                    + " posts. Reply /confirm to forward them oldest-first, or /cancel to stop.");
+                    + " posts." + resumeInstruction
+                    + " Reply /confirm to start from the oldest post, or /cancel to stop.");
         } catch (java.util.concurrent.CancellationException exception) {
             return;
         } catch (Exception exception) {
@@ -192,33 +370,55 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         }
     }
 
-    private void forwardHistory(long chatId, BackSession session) {
+    private void forwardHistory(long chatId, BackSession session, boolean resume) {
         int forwarded = 0;
         int skipped = 0;
         try {
             if (sessions.get(chatId) != session) {
                 return;
             }
-            Message heading = execute(SendMessage.builder()
-                    .chatId(session.destinationUsername)
-                    .text("Contents of: (\"" + session.sourceTitle + "\")")
-                    .build());
+            BackupCheckpointStore.Checkpoint checkpoint = resume ? session.checkpoint
+                    : new BackupCheckpointStore.Checkpoint(session.sourceChatId, session.destinationChatId,
+                    session.messageIds, 0, 0);
+            if (!resume) {
+                checkpointStore.save(checkpoint);
+            }
+
+            if (checkpoint.headingMessageId() == 0) {
+                Message heading = execute(SendMessage.builder()
+                        .chatId(session.destinationUsername)
+                        .text("Contents of: (\"" + session.sourceTitle + "\")")
+                        .build());
+                checkpoint = checkpoint.withProgress(checkpoint.nextIndex(), heading.getMessageId());
+                checkpointStore.save(checkpoint);
+            }
             PinChatMessage pinHeading = new PinChatMessage();
             pinHeading.setChatId(session.destinationUsername);
-            pinHeading.setMessageId(heading.getMessageId());
+            pinHeading.setMessageId(Math.toIntExact(checkpoint.headingMessageId()));
             execute(pinHeading);
 
-            long destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
+            Set<Long> verifiedSourceIds = new HashSet<>(historyForwarder.findForwardedSourceMessageIds(
+                    session.sourceChatId, session.destinationChatId, session.messageIds,
+                    () -> sessions.get(chatId) == session));
+            sendText(chatId, "Checked destination: " + verifiedSourceIds.size() + " of "
+                    + session.messageIds.size() + " source posts are already present.");
             for (int start = 0; start < session.messageIds.size(); start += FORWARD_BATCH_SIZE) {
                 if (sessions.get(chatId) != session) {
                     return;
                 }
 
                 int end = Math.min(start + FORWARD_BATCH_SIZE, session.messageIds.size());
-                HistoryForwarder.ForwardResult result = historyForwarder.forwardMessages(
-                        session.sourceChatId, destinationChatId, session.messageIds.subList(start, end));
-                forwarded += result.forwarded();
-                skipped += result.skipped();
+                List<Long> batch = session.messageIds.subList(start, end);
+                List<Long> missing = batch.stream().filter(id -> !verifiedSourceIds.contains(id)).toList();
+                if (!missing.isEmpty()) {
+                    HistoryForwarder.ForwardResult result = historyForwarder.forwardMessages(
+                            session.sourceChatId, session.destinationChatId, missing);
+                    forwarded += result.forwarded();
+                    skipped += result.skipped();
+                    verifiedSourceIds.addAll(result.forwardedSourceMessageIds());
+                }
+                checkpoint = checkpoint.withProgress(end, checkpoint.headingMessageId());
+                checkpointStore.save(checkpoint);
 
                 if (end < session.messageIds.size()) {
                     Thread.sleep(BATCH_DELAY_MILLIS);
@@ -227,8 +427,26 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                     sendText(chatId, "Forwarded " + forwarded + " of " + session.messageIds.size() + " posts.");
                 }
             }
-            sendText(chatId, "Finished. Forwarded " + forwarded + " of " + session.messageIds.size()
-                    + " posts; Telegram could not forward " + skipped + ".");
+            Set<Long> verifiedAfterRun = historyForwarder.findForwardedSourceMessageIds(
+                    session.sourceChatId, session.destinationChatId, session.messageIds,
+                    () -> sessions.get(chatId) == session);
+            List<Long> missingIds = session.messageIds.stream()
+                    .filter(id -> !verifiedAfterRun.contains(id)).toList();
+            if (missingIds.isEmpty()) {
+                checkpointStore.delete(session.sourceChatId, session.destinationChatId);
+                sendText(chatId, "Finished and verified: all " + session.messageIds.size()
+                        + " source posts are present in the destination. Newly forwarded: " + forwarded
+                        + "; Telegram could not forward " + skipped + ".");
+            } else {
+                checkpointStore.save(checkpoint.withProgress(session.messageIds.size(),
+                        checkpoint.headingMessageId()));
+                String missingSample = missingIds.stream().limit(10).map(String::valueOf)
+                        .collect(java.util.stream.Collectors.joining(", "));
+                sendText(chatId, "Finished with verification incomplete: " + verifiedAfterRun.size()
+                        + " of " + session.messageIds.size() + " source posts are present; "
+                        + missingIds.size() + " are missing. First missing source IDs: " + missingSample
+                        + ". Send /back to this channel pair and /resume to retry missing posts.");
+            }
         } catch (Exception exception) {
             sendText(chatId, "Forwarding stopped after " + forwarded
                     + " posts. Check the source and destination permissions, then start again.");
@@ -240,10 +458,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
     private void sendText(long chatId, String text) {
         try {
-            execute(SendMessage.builder()
-                    .chatId(Long.toString(chatId))
-                    .text(text)
-                    .build());
+            sendTextChecked(chatId, text);
         } catch (TelegramApiException exception) {
             LOGGER.warning("Could not send a bot reply: " + exception.getClass().getSimpleName());
         }
@@ -337,6 +552,11 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         private volatile String sourceTitle;
         private String destinationUsername;
         private long sourceChatId;
+        private long destinationChatId;
         private volatile List<Long> messageIds = List.of();
+        private BackupCheckpointStore.Checkpoint checkpoint;
+    }
+
+    private record PendingDelete(long chatId, int firstMessageId, int lastMessageId, long expiresAtMillis) {
     }
 }

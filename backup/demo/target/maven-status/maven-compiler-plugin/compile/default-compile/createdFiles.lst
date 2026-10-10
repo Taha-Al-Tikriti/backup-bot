@@ -1,3 +1,10 @@
+com\example\Backup$Stage.class
 com\example\HistoryForwarder$ChannelHistory.class
-com\example\HistoryForwarder.class
+com\example\Backup$PendingDelete.class
+com\example\Backup$BackSession.class
 com\example\Main.class
+com\example\Backup.class
+com\example\HistoryForwarder$ForwardResult.class
+com\example\BackupCheckpointStore.class
+com\example\HistoryForwarder.class
+com\example\BackupCheckpointStore$Checkpoint.class
