@@ -2,7 +2,6 @@ package com.example;
 
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
-import org.telegram.telegrambots.meta.api.methods.ForwardMessages;
 import org.telegram.telegrambots.meta.api.methods.GetMe;
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChat;
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
@@ -18,12 +17,12 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import java.net.URI;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class Backup extends TelegramLongPollingBot implements AutoCloseable {
@@ -116,7 +115,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 session.sourceUsername = parsePublicUsername(text);
                 session.stage = Stage.DESTINATION;
                 sendText(chatId,
-                        "Now send the destination channel username or t.me link. The bot must be an admin with Post Messages and Edit Messages permissions.");
+                        "Now send the destination channel username or t.me link. Both the bot and the Telegram account logged in at startup must be able to post there; the bot also needs Edit Messages permission.");
             } catch (IllegalArgumentException exception) {
                 sendText(chatId, exception.getMessage());
             }
@@ -171,13 +170,14 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             if (sessions.get(chatId) != session) {
                 return;
             }
-            List<Integer> messageIds = history.messageIds();
+            List<Long> messageIds = history.messageIds();
             if (messageIds.isEmpty()) {
                 sessions.remove(chatId, session);
                 sendText(chatId, "No forwardable posts were found in that source channel.");
                 return;
             }
             session.sourceTitle = history.title();
+            session.sourceChatId = history.sourceChatId();
             session.messageIds = messageIds;
             session.stage = Stage.CONFIRM;
             sendText(chatId, "Found " + messageIds.size()
@@ -187,8 +187,8 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         } catch (Exception exception) {
             sessions.remove(chatId, session);
             sendText(chatId,
-                    "Could not read that channel history. Check that it is public and available to the signed-in Telegram account.");
-            LOGGER.warning("History loading failed: " + exception.getClass().getSimpleName());
+                    "Could not read that channel history. Check that it is public and that the bot can access it.");
+            LOGGER.log(Level.WARNING, "History loading failed for @" + session.sourceUsername + ".", exception);
         }
     }
 
@@ -207,17 +207,15 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             pinHeading.setMessageId(heading.getMessageId());
             execute(pinHeading);
 
+            long destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
             for (int start = 0; start < session.messageIds.size(); start += FORWARD_BATCH_SIZE) {
                 if (sessions.get(chatId) != session) {
                     return;
                 }
 
                 int end = Math.min(start + FORWARD_BATCH_SIZE, session.messageIds.size());
-                ForwardMessages request = new ForwardMessages();
-                request.setChatId(session.destinationUsername);
-                request.setFromChatId("@" + session.sourceUsername);
-                request.setMessageIds(new ArrayList<>(session.messageIds.subList(start, end)));
-                forwarded += execute(request).size();
+                forwarded += historyForwarder.forwardMessages(session.sourceChatId, destinationChatId,
+                        session.messageIds.subList(start, end));
 
                 if (end < session.messageIds.size()) {
                     Thread.sleep(BATCH_DELAY_MILLIS);
@@ -231,7 +229,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         } catch (Exception exception) {
             sendText(chatId, "Forwarding stopped after " + forwarded
                     + " posts. Check the source and destination permissions, then start again.");
-            LOGGER.warning("History forwarding failed: " + exception.getClass().getSimpleName());
+            LOGGER.log(Level.WARNING, "History forwarding failed after " + forwarded + " posts.", exception);
         } finally {
             sessions.remove(chatId, session);
         }
@@ -335,6 +333,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         private String sourceUsername;
         private volatile String sourceTitle;
         private String destinationUsername;
-        private volatile List<Integer> messageIds = List.of();
+        private long sourceChatId;
+        private volatile List<Long> messageIds = List.of();
     }
 }

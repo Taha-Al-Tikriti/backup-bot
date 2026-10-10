@@ -42,7 +42,7 @@ public final class HistoryForwarder implements AutoCloseable {
     public ChannelHistory readMessageIds(String publicUsername, BooleanSupplier shouldContinue) throws Exception {
         TdApi.Chat source = client.send(new TdApi.SearchPublicChat(publicUsername))
                 .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-        Set<Integer> newestFirst = new LinkedHashSet<>();
+        Set<Long> newestFirst = new LinkedHashSet<>();
         long fromMessageId = 0;
         int offset = 0;
 
@@ -60,7 +60,7 @@ public final class HistoryForwarder implements AutoCloseable {
             int previousSize = newestFirst.size();
             for (TdApi.Message message : page.messages) {
                 if (message.id > 0) {
-                    newestFirst.add(Math.toIntExact(message.id));
+                    newestFirst.add(message.id);
                 }
             }
             if (newestFirst.size() == previousSize || page.messages.length < HISTORY_PAGE_SIZE) {
@@ -71,13 +71,29 @@ public final class HistoryForwarder implements AutoCloseable {
             offset = -1;
         }
 
-        List<Integer> oldestFirst = new ArrayList<>(newestFirst);
+        List<Long> oldestFirst = new ArrayList<>(newestFirst);
         Collections.reverse(oldestFirst);
         String title = source.title == null || source.title.isBlank() ? "@" + publicUsername : source.title;
-        return new ChannelHistory(title, List.copyOf(oldestFirst));
+        return new ChannelHistory(title, source.id, List.copyOf(oldestFirst));
     }
 
-    public record ChannelHistory(String title, List<Integer> messageIds) {
+    public long findPublicChatId(String publicUsername) throws Exception {
+        TdApi.Chat chat = client.send(new TdApi.SearchPublicChat(publicUsername))
+                .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        return chat.id;
+    }
+
+    public int forwardMessages(long sourceChatId, long destinationChatId, List<Long> messageIds) throws Exception {
+        TdApi.ForwardMessages request = new TdApi.ForwardMessages();
+        request.chatId = destinationChatId;
+        request.fromChatId = sourceChatId;
+        request.messageIds = messageIds.stream().mapToLong(Long::longValue).toArray();
+        request.options = new TdApi.MessageSendOptions();
+        TdApi.Messages result = client.send(request).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        return result.messages.length;
+    }
+
+    public record ChannelHistory(String title, long sourceChatId, List<Long> messageIds) {
     }
 
     @Override
