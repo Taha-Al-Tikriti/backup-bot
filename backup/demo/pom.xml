@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>demo</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <repositories>
+      <repository>
+        <id>mchv</id>
+        <url>https://mvn.mchv.eu/repository/mchv/</url>
+      </repository>
+    </repositories>
+
+    <dependencyManagement>
+      <dependencies>
+        <dependency>
+          <groupId>it.tdlight</groupId>
+          <artifactId>tdlight-java-bom</artifactId>
+          <version>3.5.4+td.1.8.66</version>
+          <type>pom</type>
+          <scope>import</scope>
+        </dependency>
+      </dependencies>
+    </dependencyManagement>
+
+    <build>
+      <sourceDirectory>src/main/java</sourceDirectory>
+      <testSourceDirectory>src/test/java</testSourceDirectory>
+    </build>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+    </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.telegram</groupId>
+      <artifactId>telegrambots</artifactId>
+      <version>6.9.7.1</version>
+    </dependency>
+    <dependency>
+      <groupId>it.tdlight</groupId>
+      <artifactId>tdlight-java</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>it.tdlight</groupId>
+      <artifactId>tdlight-natives</artifactId>
+      <classifier>windows_amd64</classifier>
+    </dependency>
+  </dependencies>
+
+
+</project>
