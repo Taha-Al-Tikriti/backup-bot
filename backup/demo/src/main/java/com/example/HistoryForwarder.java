@@ -84,29 +84,12 @@ public final class HistoryForwarder implements AutoCloseable {
         return new PublicChat(chat.id, title);
     }
 
-    public PublicChat createChannelAndPromoteBot(String title, long botUserId) throws Exception {
+    public PublicChat createChannel(String title) throws Exception {
         TdApi.CreateNewSupergroupChat create = new TdApi.CreateNewSupergroupChat();
         create.title = title;
         create.isChannel = true;
         create.description = "";
         TdApi.Chat chat = client.send(create).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-
-        TdApi.FailedToAddMembers addResult = client.send(new TdApi.AddChatMember(chat.id, botUserId, 0))
-                .get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-        if (addResult.failedToAddMembers.length > 0) {
-            throw new IllegalStateException("Telegram could not add the bot to the new channel.");
-        }
-
-        TdApi.ChatAdministratorRights rights = new TdApi.ChatAdministratorRights();
-        rights.canManageChat = true;
-        rights.canPostMessages = true;
-        rights.canEditMessages = true;
-        rights.canDeleteMessages = true;
-        rights.canPinMessages = true;
-        TdApi.SetChatMemberStatus promote = new TdApi.SetChatMemberStatus(
-                chat.id, new TdApi.MessageSenderUser(botUserId),
-                new TdApi.ChatMemberStatusAdministrator(false, rights));
-        client.send(promote).get(REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES);
         return new PublicChat(chat.id, chat.title);
     }
 

@@ -143,6 +143,20 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             return;
         }
 
+        if ("/ready".equalsIgnoreCase(text) && session.stage == Stage.CHANNEL_SETUP) {
+            try {
+                validateDestination(session.destinationUsername);
+                session.stage = Stage.LOADING;
+                sendText(chatId, "Bot permissions verified. Reading source history now.");
+                jobExecutor.execute(() -> loadHistory(chatId, session));
+            } catch (TelegramApiException exception) {
+                sendText(chatId,
+                        "I can't access that new channel yet. Add the bot as an administrator with Post Messages and Edit Messages permissions, then send /ready again.");
+                LOGGER.log(Level.WARNING, "Could not verify bot access to the newly created channel.", exception);
+            }
+            return;
+        }
+
         if (session.stage == Stage.SOURCE) {
             try {
                 session.sourceUsername = parsePublicUsername(text);
@@ -165,7 +179,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         if (session.stage == Stage.DESTINATION) {
             if ("/new".equalsIgnoreCase(text)) {
                 session.stage = Stage.CREATING;
-                sendText(chatId, "Creating the new channel and adding the bot. This may take a moment.");
+                sendText(chatId, "Creating the new channel. This may take a moment.");
                 jobExecutor.execute(() -> createDestinationAndLoad(chatId, session));
                 return;
             }
@@ -192,10 +206,9 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             if (sessions.get(chatId) != session) {
                 return;
             }
-            User bot = execute(new GetMe());
             String title = channelTitle("مخزن - " + session.sourceTitle);
             HistoryForwarder.PublicChat destination =
-                    historyForwarder.createChannelAndPromoteBot(title, bot.getId());
+                    historyForwarder.createChannel(title);
             session.destinationChatId = destination.chatId();
             session.destinationUsername = Long.toString(destination.chatId());
             if (sessions.get(chatId) != session) {
@@ -203,10 +216,10 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                         + "\", but this backup was cancelled before it could start.");
                 return;
             }
-            validateDestination(session.destinationUsername);
-            sendText(chatId, "Created \"" + title + "\" and added the bot. Reading source history now.");
-            session.stage = Stage.LOADING;
-            loadHistory(chatId, session);
+            session.stage = Stage.CHANNEL_SETUP;
+            sendText(chatId, "Created \"" + title + "\". Telegram requires you to add the bot manually: "
+                    + "open the channel's Administrators settings, add @" + botUsername
+                    + ", and grant Post Messages and Edit Messages. Then send /ready here.");
         } catch (Exception exception) {
             sessions.remove(chatId, session);
             sendText(chatId, "Could not create the destination channel or configure the bot. See the terminal for details.");
@@ -594,6 +607,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         SOURCE,
         DESTINATION,
         CREATING,
+        CHANNEL_SETUP,
         LOADING,
         CONFIRM,
         FORWARDING

@@ -5,6 +5,7 @@ com\example\Backup$BackSession.class
 com\example\Main.class
 com\example\Backup.class
 com\example\HistoryForwarder$ForwardResult.class
+com\example\HistoryForwarder$PublicChat.class
 com\example\BackupCheckpointStore.class
 com\example\HistoryForwarder.class
 com\example\BackupCheckpointStore$Checkpoint.class
