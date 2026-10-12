@@ -92,9 +92,21 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 
 يجب أن يستطيع حساب تيليجرام المسجل الوصول إلى سجل المصدر والنشر في الوجهة. ينشر البوت العنوان ويثبّته. تُعاد توجيه المنشورات من الأقدم إلى الأحدث؛ وقد يتعذر توجيه المنشورات المحذوفة أو المحمية أو غير المتاحة لسبب آخر.
 
+### مزامنة نسخة احتياطية موجودة
+
+استخدم `/sync` في المحادثة الخاصة مع البوت لإعادة مقارنة قناة مصدر بقناة وجهة موجودة وإضافة المنشورات التي لا يجدها في الوجهة فقط:
+
+1. أرسل `/sync`، ثم أرسل اسم المستخدم العام للمصدر أو رابط `t.me` عامًا.
+2. أرسل اسم المستخدم العام للوجهة أو رابطها العام. يجب أن تكون الوجهة موجودة وأن يملك البوت وحساب المستخدم المسجل صلاحيات الوصول والنشر المطلوبة؛ لا ينشئ `/sync` قناة جديدة.
+3. بعد مراجعة عدد منشورات المصدر، أرسل `/confirm` لبدء المقارنة والإصلاح أو `/cancel` للإلغاء.
+
+يقارن البوت معرّفات المنشورات المصدرية ببيانات مصدر التوجيه في سجل الوجهة. تُضاف المنشورات المفقودة بترتيبها الأصلي من الأقدم إلى الأحدث، بعد المنشورات الموجودة حاليًا؛ لا يمكن لتيليجرام إدراجها بين منشورات الوجهة المنشورة سابقًا. لا ينشئ `/sync` عنوانًا جديدًا أو يثبّته. إذا تعذر التحقق من منشورات مفقودة، يعرض البوت بعض معرّفاتها ويحتفظ بنقطة الاستئناف.
+
+للمزامنة مباشرةً مع وجهة خاصة أو غير مدرجة باسم مستخدم عام، أرسل في قناة الوجهة `/sync @sourcechannel` (أو رابط المصدر العام). يرسل البوت طلب تأكيد خاصًا إلى المستخدم المحدد في `BACKUP_ADMIN_USER_ID`؛ أرسل `/confirm_sync <token>` للمتابعة أو `/cancel_sync <token>` للإلغاء. يجب أن يكون البوت مشرفًا في قناة الوجهة وأن تكون المحادثة الخاصة مع البوت قد بدأت مسبقًا.
+
 ### الاستئناف والتحقق
 
-يحفظ البرنامج نقطة استئناف بعد كل دفعة. إذا انقطع النسخ، أعد تشغيل التطبيق، وأرسل `/back`، ثم أدخل المصدر والوجهة نفسيهما. عندما يعثر البوت على نقطة استئناف محفوظة، أرسل `/resume` للمتابعة. أرسل `/confirm` للبدء من البداية؛ إذ يجري فحص المنشورات التي أُعيد توجيهها سابقًا لتجنب التكرار عندما تكون بيانات مصدر التوجيه متاحة في تيليجرام.
+يحفظ البرنامج نقطة استئناف بعد كل دفعة. إذا انقطع النسخ، أعد تشغيل التطبيق، وأرسل `/back`، ثم أدخل المصدر والوجهة نفسيهما. عندما يعثر البوت على نقطة استئناف محفوظة، تعرض الرسالة موضع المعالجة المحفوظ؛ هذا الموضع لا يبيّن عدد المنشورات الموجودة في الوجهة. أرسل `/resume` لإعادة فحص الوجهة ومحاولة المنشورات الناقصة مع الإبقاء على العنوان الحالي، أو `/confirm` لبدء عملية نسخ جديدة وإنشاء عنوان جديد. في الحالتين يفحص التطبيق الوجهة ويتجنب المنشورات الموجودة التي يمكنه التعرّف على مصدرها.
 
 بعد الانتهاء، يفحص التطبيق سجل الوجهة بحثًا عن المنشورات المعاد توجيهها من المصدر ويبلغك بما إذا أمكن التحقق من جميع معرّفات المنشورات. إذا كانت هناك منشورات مفقودة، يحتفظ بنقطة الاستئناف لتتمكن من المحاولة مجددًا باستخدام `/resume`. يعتمد التحقق على احتفاظ تيليجرام ببيانات مصدر الرسالة المعاد توجيهها.
 
@@ -119,6 +131,9 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 ## أوامر أخرى
 
 - `/id` — عرض رقم مستخدم تيليجرام الخاص بالمرسل.
+- `/sync` — بدء مقارنة المصدر والوجهة في المحادثة الخاصة؛ أو استخدم `/sync @sourcechannel` داخل قناة الوجهة.
+- `/confirm_sync <token>` — تأكيد طلب مزامنة أُرسل من قناة.
+- `/cancel_sync <token>` — إلغاء طلب مزامنة أُرسل من قناة.
 - `/cancel` — إلغاء عملية النسخ الحالية.
 - `/start` — بدء المحادثة الخاصة مع البوت؛ يشترط تيليجرام ذلك حتى يتمكن البوت من مراسلتك على الخاص.
 
@@ -227,9 +242,21 @@ Use the bot in a **private chat**. Send each step as a separate message:
 
 The signed-in Telegram account must be able to access the source history and post in the destination. The bot account posts and pins the heading. Posts are forwarded oldest first; deleted, protected, or otherwise unavailable posts may not be forwardable.
 
+### Sync an existing backup
+
+Use `/sync` in the bot's private chat to compare a source channel with an existing destination and add only posts that are missing:
+
+1. Send `/sync`, then send the source's public username or public `t.me` link.
+2. Send the destination's public username or public link. The destination must already exist, and both the bot and signed-in user account need the required access and posting permissions. `/sync` does not create a channel.
+3. After reviewing the number of source posts found, send `/confirm` to compare and repair, or `/cancel` to stop.
+
+The bot compares source post IDs against forward-origin metadata in the destination history. Missing posts are appended in their original oldest-to-newest order, after posts already in the destination; Telegram does not let the app insert them between previously published destination posts. `/sync` does not create or pin another heading. If some missing posts cannot be verified, the bot reports sample IDs and retains the checkpoint.
+
+To sync directly from a private or otherwise unlisted destination, post `/sync @sourcechannel` (or the public source link) in the destination channel. The bot sends a private confirmation request to the user configured by `BACKUP_ADMIN_USER_ID`; reply with `/confirm_sync <token>` to proceed or `/cancel_sync <token>` to cancel. The bot must be an administrator in the destination, and you must have started a private chat with it beforehand.
+
 ### Resume and verification
 
-Progress is checkpointed after each batch. If a backup is interrupted, restart the app, send `/back`, and enter the same source and destination. When the bot detects a saved checkpoint, send `/resume` to continue. Send `/confirm` to start again from the beginning; previously forwarded posts are checked to avoid duplicates when Telegram provides recognizable forward-origin metadata.
+Progress is checkpointed after each batch. If a backup is interrupted, restart the app, send `/back`, and enter the same source and destination. If a saved checkpoint is found, the prompt shows its processing cursor; this does not tell you how many posts are in the destination. Send `/resume` to recheck the destination and retry missing posts while keeping the existing heading, or `/confirm` to start a new backup run with a new heading. Either way, the app checks the destination and skips posts it can identify as already forwarded.
 
 At the end, the app scans destination history for forwards from the source and reports whether all source post IDs could be verified. If posts are missing, it retains the checkpoint so you can retry with `/resume`. Verification depends on Telegram retaining the forwarded-message origin metadata.
 
@@ -254,6 +281,9 @@ To cancel instead, send `/cancel_delete <token>`. A request is limited to 10,000
 ## Other commands
 
 - `/id` — show the sender's numeric Telegram user ID.
+- `/sync` — start a source/destination comparison in private chat, or use `/sync @sourcechannel` inside the destination.
+- `/confirm_sync <token>` — confirm a sync request submitted in a channel.
+- `/cancel_sync <token>` — cancel a sync request submitted in a channel.
 - `/cancel` — cancel the current backup workflow.
 - `/start` — initiate the bot's private chat; Telegram requires this before the bot can message you privately.
 

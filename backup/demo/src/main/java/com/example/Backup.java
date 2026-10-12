@@ -45,6 +45,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
     private final BackupCheckpointStore checkpointStore = new BackupCheckpointStore();
     private final Map<Long, BackSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, PendingDelete> pendingDeletes = new ConcurrentHashMap<>();
+    private final Map<String, PendingSync> pendingSyncs = new ConcurrentHashMap<>();
     private final ExecutorService jobExecutor = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "telegram-backup-job");
         thread.setDaemon(true);
@@ -65,7 +66,9 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
     @Override
     public void onUpdateReceived(Update update) {
         if (update.getChannelPost() != null) {
-            handleChannelDeleteCommand(update.getChannelPost());
+            Message channelPost = update.getChannelPost();
+            handleChannelSyncCommand(channelPost);
+            handleChannelDeleteCommand(channelPost);
             return;
         }
 
@@ -81,6 +84,14 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             return;
         }
 
+        if (text.startsWith("/confirm_sync ")) {
+            confirmSync(chatId, userId, text.substring("/confirm_sync ".length()).trim());
+            return;
+        }
+        if (text.startsWith("/cancel_sync ")) {
+            cancelSync(chatId, userId, text.substring("/cancel_sync ".length()).trim());
+            return;
+        }
         if (text.startsWith("/confirm_delete ")) {
             confirmDelete(chatId, userId, text.substring("/confirm_delete ".length()).trim());
             return;
@@ -125,6 +136,32 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             return;
         }
 
+        if ("/sync".equals(text)) {
+            Long allowedUserId = configuredAdminId();
+            if (allowedUserId == null) {
+                sendText(chatId, "Set BACKUP_ADMIN_USER_ID first. Use /id to find your Telegram user ID.");
+                return;
+            }
+            if (allowedUserId != userId) {
+                sendText(chatId, "You are not allowed to sync backups.");
+                return;
+            }
+
+            BackSession currentSession = sessions.get(chatId);
+            if (currentSession != null
+                    && (currentSession.stage == Stage.CREATING || currentSession.stage == Stage.LOADING
+                    || currentSession.stage == Stage.FORWARDING)) {
+                sendText(chatId, "A backup or sync is already running. Send /cancel before starting another.");
+                return;
+            }
+
+            BackSession session = new BackSession();
+            session.syncOnly = true;
+            sessions.put(chatId, session);
+            sendText(chatId, "Send the public source channel username or t.me link to compare with the backup.");
+            return;
+        }
+
         BackSession session = sessions.get(chatId);
         if (session == null) {
             return;
@@ -132,13 +169,24 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
         if (("/confirm".equals(text) || "/resume".equals(text)) && session.stage == Stage.CONFIRM) {
             boolean resume = "/resume".equals(text);
+            if (session.syncOnly && resume) {
+                sendText(chatId, "This is a sync, not a checkpoint resume. Reply /confirm to compare the destination and add missing posts, or /cancel to stop.");
+                return;
+            }
             if (resume && session.checkpoint == null) {
-                sendText(chatId, "There is no compatible saved backup to resume. Reply /confirm to start from the beginning.");
+                sendText(chatId, "There is no saved backup checkpoint to resume. Reply /confirm to start a new backup, or /cancel to stop.");
                 return;
             }
             session.stage = Stage.FORWARDING;
-            sendText(chatId, resume ? "Resuming backup from its saved checkpoint."
-                    : "Forwarding started from the oldest post. Send /cancel to stop.");
+            String startMessage;
+            if (session.syncOnly) {
+                startMessage = "Sync started. I’m checking destination history and will append missing source posts oldest to newest. No new heading will be posted. Send /cancel to stop.";
+            } else if (resume) {
+                startMessage = "Backup resume started. I’m checking the destination, skipping source posts already found, and retrying missing posts in source order. The existing heading will be kept. Send /cancel to stop.";
+            } else {
+                startMessage = "Backup started. I’m checking the destination and forwarding posts not already found, in source order. A new heading will be posted. Send /cancel to stop.";
+            }
+            sendText(chatId, startMessage);
             jobExecutor.execute(() -> forwardHistory(chatId, session, resume));
             return;
         }
@@ -178,6 +226,10 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
 
         if (session.stage == Stage.DESTINATION) {
             if ("/new".equalsIgnoreCase(text)) {
+                if (session.syncOnly) {
+                    sendText(chatId, "Sync requires an existing destination channel. Send its public username or t.me link.");
+                    return;
+                }
                 session.stage = Stage.CREATING;
                 sendText(chatId, "Creating the new channel. This may take a moment.");
                 jobExecutor.execute(() -> createDestinationAndLoad(chatId, session));
@@ -295,6 +347,102 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         }
     }
 
+    private void handleChannelSyncCommand(Message message) {
+        String text = message.getText();
+        if (text == null || message.getChat() == null || !message.getChat().isChannelChat()
+                || !text.matches("(?is)^/sync(?:@" + botUsername + ")?(?:\\s|$).*")) {
+            return;
+        }
+
+        String[] parts = text.trim().split("\\s+");
+        if (parts.length != 2) {
+            sendText(message.getChatId(), "Usage: /sync <public_source_username_or_t.me_link>.");
+            return;
+        }
+
+        Long configuredAdmin = configuredAdminId();
+        if (configuredAdmin == null) {
+            sendText(message.getChatId(), "Sync is disabled: set BACKUP_ADMIN_USER_ID first.");
+            return;
+        }
+
+        String sourceUsername;
+        try {
+            sourceUsername = parsePublicUsername(parts[1]);
+        } catch (IllegalArgumentException exception) {
+            sendText(message.getChatId(), exception.getMessage());
+            return;
+        }
+
+        String token = UUID.randomUUID().toString();
+        pendingSyncs.put(token, new PendingSync(message.getChatId(), sourceUsername,
+                System.currentTimeMillis() + DELETE_CONFIRMATION_TTL_MILLIS));
+        pendingSyncs.entrySet().removeIf(entry ->
+                entry.getValue().expiresAtMillis() < System.currentTimeMillis());
+        try {
+            sendTextChecked(configuredAdmin,
+                    "A sync was requested in " + message.getChat().getTitle() + " for source @"
+                            + sourceUsername + ". Confirm within 10 minutes with:\n/confirm_sync " + token
+                            + "\nCancel with:\n/cancel_sync " + token);
+            sendText(message.getChatId(), "Sync request sent to the configured admin for private confirmation.");
+        } catch (TelegramApiException exception) {
+            pendingSyncs.remove(token);
+            sendText(message.getChatId(),
+                    "Could not notify the configured admin. They must start the bot in a private chat first.");
+            LOGGER.log(Level.WARNING, "Could not send a channel sync request to the configured admin.", exception);
+        }
+    }
+
+    private void confirmSync(long chatId, long userId, String token) {
+        Long allowedUserId = configuredAdminId();
+        if (allowedUserId == null || allowedUserId != userId) {
+            sendText(chatId, "You are not allowed to confirm sync requests.");
+            return;
+        }
+        BackSession currentSession = sessions.get(chatId);
+        if (currentSession != null
+                && (currentSession.stage == Stage.CREATING || currentSession.stage == Stage.LOADING
+                || currentSession.stage == Stage.FORWARDING)) {
+            sendText(chatId, "A backup or sync is already running. Send /cancel before starting another.");
+            return;
+        }
+        PendingSync pending = pendingSyncs.remove(token);
+        if (pending == null || pending.expiresAtMillis() < System.currentTimeMillis()) {
+            sendText(chatId, "That sync request is missing or has expired. Submit the channel command again.");
+            return;
+        }
+
+        BackSession session = new BackSession();
+        session.syncOnly = true;
+        session.sourceUsername = pending.sourceUsername();
+        session.destinationChatId = pending.destinationChatId();
+        session.destinationUsername = Long.toString(pending.destinationChatId());
+        session.stage = Stage.LOADING;
+        try {
+            validateDestination(session.destinationUsername);
+            sessions.put(chatId, session);
+            sendText(chatId, "Sync confirmed. Comparing the source with the channel and preparing to add missing posts.");
+            jobExecutor.execute(() -> loadHistory(chatId, session));
+        } catch (IllegalArgumentException exception) {
+            sendText(chatId, exception.getMessage());
+        } catch (TelegramApiException exception) {
+            sendText(chatId,
+                    "Could not access the destination channel. Verify that the bot is an administrator with Post Messages and Edit Messages permissions.");
+            LOGGER.log(Level.WARNING, "Could not validate a channel sync destination.", exception);
+        }
+    }
+
+    private void cancelSync(long chatId, long userId, String token) {
+        Long allowedUserId = configuredAdminId();
+        if (allowedUserId == null || allowedUserId != userId) {
+            sendText(chatId, "You are not allowed to cancel sync requests.");
+            return;
+        }
+        PendingSync pending = pendingSyncs.remove(token);
+        sendText(chatId, pending == null ? "That sync request is missing or has expired."
+                : "Sync request cancelled.");
+    }
+
     private void validateCanDelete(Chat chat) throws TelegramApiException {
         User bot = execute(new GetMe());
         GetChatMember getMember = new GetChatMember();
@@ -394,6 +542,11 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             if (sessions.get(chatId) != session) {
                 return;
             }
+            if (session.destinationChatId != 0 && history.sourceChatId() == session.destinationChatId) {
+                sessions.remove(chatId, session);
+                sendText(chatId, "Source and destination must be different channels.");
+                return;
+            }
             List<Long> messageIds = history.messageIds();
             if (messageIds.isEmpty()) {
                 sessions.remove(chatId, session);
@@ -405,26 +558,34 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             if (session.destinationChatId == 0) {
                 session.destinationChatId = historyForwarder.findPublicChatId(session.destinationUsername);
             }
-            Optional<BackupCheckpointStore.Checkpoint> savedCheckpoint = checkpointStore.load(
-                    session.sourceChatId, session.destinationChatId);
-            if (savedCheckpoint.isPresent()) {
-                BackupCheckpointStore.Checkpoint saved = savedCheckpoint.get();
-                TreeSet<Long> allMessageIds = new TreeSet<>(saved.messageIds());
-                allMessageIds.addAll(messageIds);
-                session.messageIds = List.copyOf(allMessageIds);
-                session.checkpoint = new BackupCheckpointStore.Checkpoint(
-                        saved.sourceChatId(), saved.destinationChatId(), session.messageIds,
-                        Math.min(saved.nextIndex(), session.messageIds.size()), saved.headingMessageId());
-            } else {
+            Optional<BackupCheckpointStore.Checkpoint> savedCheckpoint = Optional.empty();
+            if (session.syncOnly) {
                 session.messageIds = messageIds;
+            } else {
+                savedCheckpoint = checkpointStore.load(session.sourceChatId, session.destinationChatId);
+                if (savedCheckpoint.isPresent()) {
+                    BackupCheckpointStore.Checkpoint saved = savedCheckpoint.get();
+                    TreeSet<Long> allMessageIds = new TreeSet<>(saved.messageIds());
+                    allMessageIds.addAll(messageIds);
+                    session.messageIds = List.copyOf(allMessageIds);
+                    session.checkpoint = new BackupCheckpointStore.Checkpoint(
+                            saved.sourceChatId(), saved.destinationChatId(), session.messageIds,
+                            Math.min(saved.nextIndex(), session.messageIds.size()), saved.headingMessageId());
+                } else {
+                    session.messageIds = messageIds;
+                }
             }
             session.stage = Stage.CONFIRM;
-            String resumeInstruction = session.checkpoint == null ? ""
-                    : " A saved checkpoint exists at " + session.checkpoint.nextIndex() + " of "
-                    + session.messageIds.size() + "; reply /resume to continue it, or /confirm to start over.";
-            sendText(chatId, "Found " + messageIds.size()
-                    + " posts." + resumeInstruction
-                    + " Reply /confirm to start from the oldest post, or /cancel to stop.");
+            String nextAction;
+            if (session.syncOnly) {
+                nextAction = " The destination will be checked, and only missing posts will be appended oldest to newest. Reply /confirm to run the sync, or /cancel to stop.";
+            } else if (session.checkpoint != null) {
+                nextAction = " Saved checkpoint cursor: " + session.checkpoint.nextIndex() + " of "
+                        + session.messageIds.size() + " source posts. This is processing progress only; it does not indicate how many posts are in the destination. Reply /resume to recheck the destination and retry missing posts while keeping the existing heading, /confirm to start a new backup run with a new heading, or /cancel to stop.";
+            } else {
+                nextAction = " Reply /confirm to start the backup, or /cancel to stop.";
+            }
+            sendText(chatId, "Found " + session.messageIds.size() + " source posts." + nextAction);
         } catch (java.util.concurrent.CancellationException exception) {
             return;
         } catch (Exception exception) {
@@ -442,14 +603,24 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             if (sessions.get(chatId) != session) {
                 return;
             }
-            BackupCheckpointStore.Checkpoint checkpoint = resume ? session.checkpoint
-                    : new BackupCheckpointStore.Checkpoint(session.sourceChatId, session.destinationChatId,
-                    session.messageIds, 0, 0);
+            BackupCheckpointStore.Checkpoint checkpoint;
+            if (resume) {
+                checkpoint = session.checkpoint;
+            } else if (session.syncOnly) {
+                Optional<BackupCheckpointStore.Checkpoint> saved = checkpointStore.load(
+                        session.sourceChatId, session.destinationChatId);
+                long headingMessageId = saved.map(BackupCheckpointStore.Checkpoint::headingMessageId).orElse(0L);
+                checkpoint = new BackupCheckpointStore.Checkpoint(session.sourceChatId,
+                        session.destinationChatId, session.messageIds, 0, headingMessageId);
+            } else {
+                checkpoint = new BackupCheckpointStore.Checkpoint(session.sourceChatId, session.destinationChatId,
+                        session.messageIds, 0, 0);
+            }
             if (!resume) {
                 checkpointStore.save(checkpoint);
             }
 
-            if (checkpoint.headingMessageId() == 0) {
+            if (!session.syncOnly && checkpoint.headingMessageId() == 0) {
                 Message heading = execute(SendMessage.builder()
                         .chatId(session.destinationUsername)
                         .text("Contents of: (\"" + session.sourceTitle + "\")")
@@ -457,10 +628,12 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 checkpoint = checkpoint.withProgress(checkpoint.nextIndex(), heading.getMessageId());
                 checkpointStore.save(checkpoint);
             }
-            PinChatMessage pinHeading = new PinChatMessage();
-            pinHeading.setChatId(session.destinationUsername);
-            pinHeading.setMessageId(Math.toIntExact(checkpoint.headingMessageId()));
-            execute(pinHeading);
+            if (!session.syncOnly) {
+                PinChatMessage pinHeading = new PinChatMessage();
+                pinHeading.setChatId(session.destinationUsername);
+                pinHeading.setMessageId(Math.toIntExact(checkpoint.headingMessageId()));
+                execute(pinHeading);
+            }
 
             Set<Long> verifiedSourceIds = new HashSet<>(historyForwarder.findForwardedSourceMessageIds(
                     session.sourceChatId, session.destinationChatId, session.messageIds,
@@ -499,23 +672,34 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                     .filter(id -> !verifiedAfterRun.contains(id)).toList();
             if (missingIds.isEmpty()) {
                 checkpointStore.delete(session.sourceChatId, session.destinationChatId);
-                sendText(chatId, "Finished and verified: all " + session.messageIds.size()
-                        + " source posts are present in the destination. Newly forwarded: " + forwarded
-                        + "; Telegram could not forward " + skipped + ".");
+                if (session.syncOnly) {
+                    sendText(chatId, "Sync complete and verified: all " + session.messageIds.size()
+                            + " source posts are present in the destination. Added " + forwarded
+                            + " missing posts in source order; Telegram could not forward " + skipped + ".");
+                } else {
+                    sendText(chatId, "Finished and verified: all " + session.messageIds.size()
+                            + " source posts are present in the destination. Newly forwarded: " + forwarded
+                            + "; Telegram could not forward " + skipped + ".");
+                }
             } else {
                 checkpointStore.save(checkpoint.withProgress(session.messageIds.size(),
                         checkpoint.headingMessageId()));
                 String missingSample = missingIds.stream().limit(10).map(String::valueOf)
                         .collect(java.util.stream.Collectors.joining(", "));
-                sendText(chatId, "Finished with verification incomplete: " + verifiedAfterRun.size()
+                String retryInstructions = session.syncOnly
+                        ? " Run /sync again with this source and destination to retry."
+                        : " Send /back to this channel pair and /resume to retry missing posts.";
+                sendText(chatId, (session.syncOnly ? "Sync finished" : "Finished")
+                        + " with verification incomplete: " + verifiedAfterRun.size()
                         + " of " + session.messageIds.size() + " source posts are present; "
                         + missingIds.size() + " are missing. First missing source IDs: " + missingSample
-                        + ". Send /back to this channel pair and /resume to retry missing posts.");
+                        + "." + retryInstructions);
             }
         } catch (Exception exception) {
-            sendText(chatId, "Forwarding stopped after " + forwarded
-                    + " posts. Check the source and destination permissions, then start again.");
-            LOGGER.log(Level.WARNING, "History forwarding failed after " + forwarded + " posts.", exception);
+            sendText(chatId, (session.syncOnly ? "Sync" : "Backup forwarding") + " stopped after " + forwarded
+                    + " posts were forwarded during this run. Check source and destination permissions, then retry.");
+            LOGGER.log(Level.WARNING, (session.syncOnly ? "History sync" : "History forwarding")
+                    + " failed after " + forwarded + " posts.", exception);
         } finally {
             sessions.remove(chatId, session);
         }
@@ -622,8 +806,12 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         private long destinationChatId;
         private volatile List<Long> messageIds = List.of();
         private BackupCheckpointStore.Checkpoint checkpoint;
+        private boolean syncOnly;
     }
 
     private record PendingDelete(long chatId, int firstMessageId, int lastMessageId, long expiresAtMillis) {
+    }
+
+    private record PendingSync(long destinationChatId, String sourceUsername, long expiresAtMillis) {
     }
 }

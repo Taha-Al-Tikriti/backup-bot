@@ -8,4 +8,5 @@ com\example\HistoryForwarder$ForwardResult.class
 com\example\HistoryForwarder$PublicChat.class
 com\example\BackupCheckpointStore.class
 com\example\HistoryForwarder.class
+com\example\Backup$PendingSync.class
 com\example\BackupCheckpointStore$Checkpoint.class
