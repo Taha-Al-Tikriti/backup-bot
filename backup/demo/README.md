@@ -85,14 +85,19 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 استخدم البوت في **محادثة خاصة**. أرسل كل خطوة في رسالة مستقلة:
 
 1. أرسل `/back`.
-2. أرسل اسم المستخدم العام للقناة المصدر (مثل `@sourcechannel`) أو رابط `t.me` عامًا.
-3. اختر وجهة النسخ:
+2. أرسل اسم المستخدم العام للقناة المصدر (مثل `@sourcechannel`) أو رابط القناة أو أحد منشوراتها.
+3. إذا أرسلت اسم المستخدم أو رابط القناة فقط، أرسل رابط المنشور الذي تريد البدء منه أو رقم رسالته؛ أرسل `/all` لنسخ السجل كاملًا. إذا أرسلت رابط منشور، سيستخدمه التطبيق كنقطة البداية مباشرةً.
+4. اختر وجهة النسخ:
    - **قناة موجودة:** أرسل اسم المستخدم العام أو رابط `t.me` عامًا. لا تدعم آلية الإدخال الحالية روابط الدعوات الخاصة. يجب أن يكون البوت مشرفًا في القناة مع صلاحيتَي **Post Messages** و**Edit Messages**، كما يجب أن يتمكن حساب المستخدم المسجل من النشر فيها.
    - **قناة جديدة:** أرسل `/new`. سينشئ حساب المستخدم المسجل قناة باسم `مخزن - <اسم القناة المصدر>`. لا تسمح Telegram لهذه الأداة بإضافة البوت عبر TDLib؛ لذا أضف البوت يدويًا إلى **Administrators** في القناة الجديدة وامنحه صلاحيتَي **Post Messages** و**Edit Messages**، ثم أرسل `/ready` إلى البوت في المحادثة الخاصة.
-4. يقرأ البوت سجل القناة المصدر ويعرض عدد المنشورات التي وجدها.
-5. أرسل `/confirm` لبدء النسخ أو `/cancel` لإلغائه.
+5. يقرأ البوت سجل القناة المصدر من نقطة البداية ويعرض عدد المنشورات التي وجدها.
+6. أرسل `/confirm` لبدء النسخ أو `/cancel` لإلغائه.
 
 يجب أن يستطيع حساب تيليجرام المسجل الوصول إلى سجل المصدر والنشر في الوجهة. ينشر البوت العنوان ويثبّته. تُعاد توجيه المنشورات من الأقدم إلى الأحدث؛ وقد يتعذر توجيه المنشورات المحذوفة أو المحمية أو غير المتاحة لسبب آخر.
+
+تُعاد توجيه المنشورات بترتيبها الأصلي، منشورًا واحدًا كل 200 مللي ثانية (بحد أقصى 5 منشورات في الثانية).
+
+لإنشاء نسخة احتياطية مباشرةً إلى القناة التي أرسلت فيها الأمر، أرسل `/back @sourcechannel` أو `/back <source_post_link>`. ويمكنك إضافة نقطة بداية كرقم أو رابط منشور: `/back @sourcechannel 123` أو `/back @sourcechannel <source_post_link>`. يجب أن يكون البوت مشرفًا في هذه القناة مع صلاحيتَي **Post Messages** و**Edit Messages**، ويجب أن تكون قد بدأت محادثة خاصة مع البوت. أرسل `/confirm_back <token>` في الخاص لتأكيد الطلب خلال 10 دقائق، أو `/cancel_back <token>` لإلغائه. بعد قراءة السجل، أرسل `/confirm` لبدء النسخ أو `/cancel` لإلغائه.
 
 ### مزامنة نسخة احتياطية موجودة
 
@@ -102,13 +107,15 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 2. أرسل اسم المستخدم العام للوجهة أو رابطها العام. يجب أن تكون الوجهة موجودة وأن يملك البوت وحساب المستخدم المسجل صلاحيات الوصول والنشر المطلوبة؛ لا ينشئ `/sync` قناة جديدة.
 3. بعد مراجعة عدد منشورات المصدر، أرسل `/confirm` لبدء المقارنة والإصلاح أو `/cancel` للإلغاء.
 
-يقارن البوت معرّفات المنشورات المصدرية ببيانات مصدر التوجيه في سجل الوجهة. تُضاف المنشورات المفقودة بترتيبها الأصلي من الأقدم إلى الأحدث، بعد المنشورات الموجودة حاليًا؛ لا يمكن لتيليجرام إدراجها بين منشورات الوجهة المنشورة سابقًا. لا ينشئ `/sync` عنوانًا جديدًا أو يثبّته. إذا تعذر التحقق من منشورات مفقودة، يعرض البوت بعض معرّفاتها ويحتفظ بنقطة الاستئناف.
+يقارن البوت معرّفات المنشورات المصدرية ببيانات مصدر التوجيه في سجل الوجهة. تُضاف المنشورات المفقودة بترتيبها الأصلي من الأقدم إلى الأحدث، منشورًا واحدًا كل 200 مللي ثانية (بحد أقصى 5 منشورات في الثانية)، بعد المنشورات الموجودة حاليًا؛ لا يمكن لتيليجرام إدراجها بين منشورات الوجهة المنشورة سابقًا. لا ينشئ `/sync` عنوانًا جديدًا أو يثبّته. إذا تعذر التحقق من منشورات مفقودة، يعرض البوت بعض معرّفاتها ويحتفظ بنقطة الاستئناف.
 
 للمزامنة مباشرةً مع وجهة خاصة أو غير مدرجة باسم مستخدم عام، أرسل في قناة الوجهة `/sync @sourcechannel` (أو رابط المصدر العام). يرسل البوت طلب تأكيد خاصًا إلى المستخدم المحدد في `BACKUP_ADMIN_USER_ID`؛ أرسل `/confirm_sync <token>` للمتابعة أو `/cancel_sync <token>` للإلغاء. يجب أن يكون البوت مشرفًا في قناة الوجهة وأن تكون المحادثة الخاصة مع البوت قد بدأت مسبقًا.
 
+لفحص المنشورات المعاد توجيهها أكثر من مرة، أرسل `/scan_duplicates` في قناة الوجهة. يرسل البوت طلب تأكيد خاصًا إلى المستخدم المحدد في `BACKUP_ADMIN_USER_ID`؛ أرسل `/confirm_scan_duplicates <token>` للمتابعة أو `/cancel_scan_duplicates <token>` للإلغاء خلال 10 دقائق. يرسل التقرير على الخاص ويعرض معرّفات قناة/رسالة المصدر ومعرّفات الرسائل المتكررة في الوجهة. الفحص للقراءة فقط ولا يحذف الرسائل أو يعدّلها. يعتمد على بيانات المصدر التي يحتفظ بها تيليجرام للمنشورات المعاد توجيهها.
+
 ### الاستئناف والتحقق
 
-يحفظ البرنامج نقطة استئناف بعد كل دفعة. إذا انقطع النسخ، أعد تشغيل التطبيق، وأرسل `/back`، ثم أدخل المصدر والوجهة نفسيهما. عندما يعثر البوت على نقطة استئناف محفوظة، تعرض الرسالة موضع المعالجة المحفوظ؛ هذا الموضع لا يبيّن عدد المنشورات الموجودة في الوجهة. أرسل `/resume` لإعادة فحص الوجهة ومحاولة المنشورات الناقصة مع الإبقاء على العنوان الحالي، أو `/confirm` لبدء عملية نسخ جديدة وإنشاء عنوان جديد. في الحالتين يفحص التطبيق الوجهة ويتجنب المنشورات الموجودة التي يمكنه التعرّف على مصدرها.
+يحفظ البرنامج نقطة استئناف بعد كل دفعة. إذا انقطع النسخ، أعد تشغيل التطبيق، وأرسل `/back`، ثم أدخل المصدر والوجهة نفسيهما. إذا كانت النسخة بدأت من منشور محدد، أدخل نقطة البداية نفسها أيضًا. عندما يعثر البوت على نقطة استئناف محفوظة، تعرض الرسالة موضع المعالجة المحفوظ؛ هذا الموضع لا يبيّن عدد المنشورات الموجودة في الوجهة. قبل التوجيه، يعرض البوت نقطة البداية الشاملة وعدد المنشورات التي سيتخطاها لأنها موجودة مسبقًا، وأول منشور مفقود سيُوجَّه. أرسل `/resume` لإعادة فحص الوجهة ومحاولة المنشورات الناقصة مع الإبقاء على العنوان الحالي، أو `/confirm` لبدء عملية نسخ جديدة وإنشاء عنوان جديد. في الحالتين يفحص التطبيق الوجهة ويتجنب المنشورات الموجودة التي يمكنه التعرّف على مصدرها.
 
 بعد الانتهاء، يفحص التطبيق سجل الوجهة بحثًا عن المنشورات المعاد توجيهها من المصدر ويبلغك بما إذا أمكن التحقق من جميع معرّفات المنشورات. إذا كانت هناك منشورات مفقودة، يحتفظ بنقطة الاستئناف لتتمكن من المحاولة مجددًا باستخدام `/resume`. يعتمد التحقق على احتفاظ تيليجرام ببيانات مصدر الرسالة المعاد توجيهها.
 
@@ -133,9 +140,15 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 ## أوامر أخرى
 
 - `/id` — عرض رقم مستخدم تيليجرام الخاص بالمرسل.
+- `/back @sourcechannel [starting message ID or post link]` — طلب نسخ احتياطي إلى القناة التي أُرسل فيها الأمر، اختياريًا بدءًا من منشور محدد.
+- `/confirm_back <token>` — تأكيد طلب النسخ المرسل من قناة في المحادثة الخاصة.
+- `/cancel_back <token>` — إلغاء طلب النسخ المرسل من قناة في المحادثة الخاصة.
 - `/sync` — بدء مقارنة المصدر والوجهة في المحادثة الخاصة؛ أو استخدم `/sync @sourcechannel` داخل قناة الوجهة.
 - `/confirm_sync <token>` — تأكيد طلب مزامنة أُرسل من قناة.
 - `/cancel_sync <token>` — إلغاء طلب مزامنة أُرسل من قناة.
+- `/scan_duplicates` — طلب فحص للقراءة فقط عن المنشورات المعاد توجيهها أكثر من مرة في قناة الوجهة.
+- `/confirm_scan_duplicates <token>` — تأكيد طلب فحص التكرار في المحادثة الخاصة.
+- `/cancel_scan_duplicates <token>` — إلغاء طلب فحص التكرار في المحادثة الخاصة.
 - `/cancel` — إلغاء عملية النسخ الحالية.
 - `/start` — بدء المحادثة الخاصة مع البوت؛ يشترط تيليجرام ذلك حتى يتمكن البوت من مراسلتك على الخاص.
 
@@ -145,6 +158,7 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 - **ظهور مطالبة الوجهة القديمة:** أوقف عملية البوت القديمة عبر Ctrl+C، ثم شغّل أمر البناء والتشغيل أعلاه من مجلد `backup\demo`.
 - **ظهور `USER_BOT` عند إنشاء قناة:** رفض تيليجرام محاولة إضافة بوت عبر واجهة حساب المستخدم. يطلب مسار `/new` في التطبيق الآن إضافة البوت وترقيته يدويًا، ثم إرسال `/ready`.
 - **أخطاء الوصول إلى السجل أو إعادة التوجيه:** تحقق من أن الحساب المسجل يستطيع قراءة المصدر والنشر في الوجهة. قد يتعذر توجيه المنشورات المحمية.
+- **رسالة `Too Many Requests: retry after N`:** يفرض تيليجرام انتظارًا قبل الإرسال التالي. ينتظر التطبيق المدة التي يحددها تيليجرام، ثم يوقف النسخ أو المزامنة. أرسل `/resume` لمتابعة النسخ أو `/confirm` لمتابعة المزامنة؛ سيتحقق التطبيق من المنشورات الموجودة قبل إعادة إرسال المفقود.
 - **رسالة SLF4J التي تفيد بعدم العثور على providers:** هذا تحذير متعلق بمزوّد التسجيل، ولا يعني وحده أن تشغيل البوت فشل.
 - لا تشارك رمز البوت أو API Hash أو رمز تسجيل الدخول أو مجلد جلسة TDLib عند طلب المساعدة.
 
@@ -235,14 +249,17 @@ The TDLib login session is stored in `%USERPROFILE%\.0_bot\tdlight-session`. Pro
 Use the bot in a **private chat**. Send each step as a separate message:
 
 1. Send `/back`.
-2. Send the source channel's public username (for example, `@sourcechannel`) or a public `t.me` link.
-3. Choose a destination:
+2. Send the source channel's public username (for example, `@sourcechannel`), a public channel link, or a link to one of its posts.
+3. If you sent only a username or channel link, send the link or numeric ID of the post to start from; send `/all` to back up the full history. A post link sent as the source is used as the starting point automatically.
+4. Choose a destination:
    - **Existing channel:** send its public username or public `t.me` link. Private invite links are not supported by the current input flow. The bot must already be an administrator there with **Post Messages** and **Edit Messages** permissions. The signed-in user account must also be able to post there.
    - **New channel:** send `/new`. The signed-in user account creates a channel named `مخزن - <source channel name>`. Telegram does not allow this app to add a bot through TDLib, so manually add the bot to **Administrators** in the new channel, grant **Post Messages** and **Edit Messages**, then send `/ready` to the bot in the private chat.
-4. The bot reads the source history and reports how many posts it found.
-5. Send `/confirm` to start or `/cancel` to cancel.
+5. The bot reads the source history from the selected starting post and reports how many posts it found.
+6. Send `/confirm` to start or `/cancel` to cancel.
 
-The signed-in Telegram account must be able to access the source history and post in the destination. The bot account posts and pins the heading. Posts are forwarded oldest first; deleted, protected, or otherwise unavailable posts may not be forwardable.
+The signed-in Telegram account must be able to access the source history and post in the destination. The bot account posts and pins the heading. Posts, including voice messages, are forwarded oldest first, individually paced at 200 ms apart (a maximum of 5 posts per second). Deleted, protected, or otherwise unavailable posts may not be forwardable.
+
+To back up directly to the channel where you send the command, post `/back @sourcechannel` or `/back <source_post_link>` there. You can also specify a starting point as an ID or post link, for example `/back @sourcechannel 123` or `/back @sourcechannel <source_post_link>`. The bot must be an administrator there with **Post Messages** and **Edit Messages**, and you must have started a private chat with it. In the private chat, confirm within 10 minutes using `/confirm_back <token>` or cancel with `/cancel_back <token>`. After the source history is loaded, send `/confirm` to start forwarding or `/cancel` to stop.
 
 ### Sync an existing backup
 
@@ -252,15 +269,19 @@ Use `/sync` in the bot's private chat to compare a source channel with an existi
 2. Send the destination's public username or public link. The destination must already exist, and both the bot and signed-in user account need the required access and posting permissions. `/sync` does not create a channel.
 3. After reviewing the number of source posts found, send `/confirm` to compare and repair, or `/cancel` to stop.
 
-The bot compares source post IDs against forward-origin metadata in the destination history. Missing posts are appended in their original oldest-to-newest order, after posts already in the destination; Telegram does not let the app insert them between previously published destination posts. `/sync` does not create or pin another heading. If some missing posts cannot be verified, the bot reports sample IDs and retains the checkpoint.
+The bot compares source post IDs against forward-origin metadata in the destination history. Missing posts are appended oldest first, individually paced at 200 ms apart (a maximum of 5 posts per second), after posts already in the destination; Telegram does not let the app insert them between previously published destination posts. `/sync` does not create or pin another heading. If some missing posts cannot be verified, the bot reports sample IDs and retains the checkpoint.
 
 To sync directly from a private or otherwise unlisted destination, post `/sync @sourcechannel` (or the public source link) in the destination channel. The bot sends a private confirmation request to the user configured by `BACKUP_ADMIN_USER_ID`; reply with `/confirm_sync <token>` to proceed or `/cancel_sync <token>` to cancel. The bot must be an administrator in the destination, and you must have started a private chat with it beforehand.
 
 ### Resume and verification
 
-Progress is checkpointed after each batch. If a backup is interrupted, restart the app, send `/back`, and enter the same source and destination. If a saved checkpoint is found, the prompt shows its processing cursor; this does not tell you how many posts are in the destination. Send `/resume` to recheck the destination and retry missing posts while keeping the existing heading, or `/confirm` to start a new backup run with a new heading. Either way, the app checks the destination and skips posts it can identify as already forwarded.
+Progress is checkpointed after each batch. If a backup is interrupted, restart the app, send `/back`, and enter the same source and destination. If the backup started at a specific post, enter the same starting point again. If a saved checkpoint is found, the prompt shows its processing cursor; this does not tell you how many posts are in the destination. Before forwarding, the app reports the inclusive starting post, how many selected posts it will skip because they are already present, and the first missing post it will forward. Send `/resume` to recheck the destination and retry missing posts while keeping the existing heading, or `/confirm` to start a new backup run with a new heading. Either way, the app checks the destination and skips posts it can identify as already forwarded.
 
 At the end, the app scans destination history for forwards from the source and reports whether all source post IDs could be verified. If posts are missing, it retains the checkpoint so you can retry with `/resume`. Verification depends on Telegram retaining the forwarded-message origin metadata.
+
+### Scan for repeated forwarded posts
+
+Post `/scan_duplicates` in the destination channel. The bot sends a confirmation request to the user configured by `BACKUP_ADMIN_USER_ID`; in the private chat, confirm within 10 minutes using `/confirm_scan_duplicates <token>` or cancel with `/cancel_scan_duplicates <token>`. The report is sent privately and lists source channel/message IDs and the matching destination message IDs. The scan is read-only; it does not modify or delete messages. Telegram may not retain source metadata for every kind of forward, so only forwarded channel posts whose origin metadata is available can be compared.
 
 ## Delete a range of channel messages
 
@@ -283,9 +304,15 @@ To cancel instead, send `/cancel_delete <token>`. A request is limited to 10,000
 ## Other commands
 
 - `/id` — show the sender's numeric Telegram user ID.
+- `/back <sourcechannel> [starting message ID or post link]` — request a backup to the channel where the command was posted, optionally starting at a specific post.
+- `/confirm_back <token>` — confirm a channel backup request in private chat.
+- `/cancel_back <token>` — cancel a channel backup request in private chat.
 - `/sync` — start a source/destination comparison in private chat, or use `/sync @sourcechannel` inside the destination.
 - `/confirm_sync <token>` — confirm a sync request submitted in a channel.
 - `/cancel_sync <token>` — cancel a sync request submitted in a channel.
+- `/scan_duplicates` — request a read-only scan for repeated forwards in the destination channel.
+- `/confirm_scan_duplicates <token>` — confirm a repeated-forward scan request in private chat.
+- `/cancel_scan_duplicates <token>` — cancel a repeated-forward scan request in private chat.
 - `/cancel` — cancel the current backup workflow.
 - `/start` — initiate the bot's private chat; Telegram requires this before the bot can message you privately.
 
@@ -295,5 +322,6 @@ To cancel instead, send `/cancel_delete <token>`. A request is limited to 10,000
 - **The old destination prompt appears:** stop the old bot process with Ctrl+C, then run the build/start command above from `backup\demo`.
 - **`USER_BOT` while creating a channel:** Telegram rejected an attempt to add a bot through the user-account API. The app's `/new` flow now asks you to add and promote the bot manually, then send `/ready`.
 - **History access or forwarding errors:** verify that the signed-in account can read the source and post in the destination. Protected posts may not be forwardable.
+- **`Too Many Requests: retry after N`:** Telegram requires a pause before sending again. The app waits for Telegram's specified interval, then pauses the backup or sync. Send `/resume` to continue a backup or `/confirm` to continue a sync; the app checks which posts are already present before retrying missing posts.
 - **SLF4J reports that no providers were found:** this is a logging-provider warning; by itself, it does not mean the bot failed to start.
 - Do not share the bot token, API hash, login code, or TDLib session directory when asking for help.
