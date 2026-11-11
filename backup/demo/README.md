@@ -158,7 +158,7 @@ mvn clean compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java "-Dexec.mainCla
 - **ظهور مطالبة الوجهة القديمة:** أوقف عملية البوت القديمة عبر Ctrl+C، ثم شغّل أمر البناء والتشغيل أعلاه من مجلد `backup\demo`.
 - **ظهور `USER_BOT` عند إنشاء قناة:** رفض تيليجرام محاولة إضافة بوت عبر واجهة حساب المستخدم. يطلب مسار `/new` في التطبيق الآن إضافة البوت وترقيته يدويًا، ثم إرسال `/ready`.
 - **أخطاء الوصول إلى السجل أو إعادة التوجيه:** تحقق من أن الحساب المسجل يستطيع قراءة المصدر والنشر في الوجهة. قد يتعذر توجيه المنشورات المحمية.
-- **رسالة `Too Many Requests: retry after N`:** يفرض تيليجرام انتظارًا قبل الإرسال التالي. ينتظر التطبيق المدة التي يحددها تيليجرام، ثم يوقف النسخ أو المزامنة. أرسل `/resume` لمتابعة النسخ أو `/confirm` لمتابعة المزامنة؛ سيتحقق التطبيق من المنشورات الموجودة قبل إعادة إرسال المفقود.
+- **رسالة `Too Many Requests: retry after N`:** يفرض تيليجرام انتظارًا قبل الإرسال التالي. ينتظر التطبيق المدة التي يحددها تيليجرام، ثم يعيد فحص الوجهة ويتابع النسخ أو المزامنة تلقائيًا، مع تخطي المنشورات التي وصلت بالفعل. أرسل `/cancel` إذا أردت إيقاف العملية.
 - **رسالة SLF4J التي تفيد بعدم العثور على providers:** هذا تحذير متعلق بمزوّد التسجيل، ولا يعني وحده أن تشغيل البوت فشل.
 - لا تشارك رمز البوت أو API Hash أو رمز تسجيل الدخول أو مجلد جلسة TDLib عند طلب المساعدة.
 
@@ -322,6 +322,6 @@ To cancel instead, send `/cancel_delete <token>`. A request is limited to 10,000
 - **The old destination prompt appears:** stop the old bot process with Ctrl+C, then run the build/start command above from `backup\demo`.
 - **`USER_BOT` while creating a channel:** Telegram rejected an attempt to add a bot through the user-account API. The app's `/new` flow now asks you to add and promote the bot manually, then send `/ready`.
 - **History access or forwarding errors:** verify that the signed-in account can read the source and post in the destination. Protected posts may not be forwardable.
-- **`Too Many Requests: retry after N`:** Telegram requires a pause before sending again. The app waits for Telegram's specified interval, then pauses the backup or sync. Send `/resume` to continue a backup or `/confirm` to continue a sync; the app checks which posts are already present before retrying missing posts.
+- **`Too Many Requests: retry after N`:** Telegram requires a pause before sending again. The app waits for Telegram's specified interval, rechecks destination history, and automatically continues the backup or sync while skipping posts that already arrived. Send `/cancel` if you want to stop the operation.
 - **SLF4J reports that no providers were found:** this is a logging-provider warning; by itself, it does not mean the bot failed to start.
 - Do not share the bot token, API hash, login code, or TDLib session directory when asking for help.

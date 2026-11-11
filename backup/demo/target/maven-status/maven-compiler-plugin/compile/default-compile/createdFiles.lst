@@ -11,6 +11,7 @@ com\example\HistoryForwarder$RateLimitException.class
 com\example\HistoryForwarder.class
 com\example\HistoryForwarder$ChannelHistory.class
 com\example\HistoryForwarder$MessageKey.class
+com\example\Backup$ForwardProgress.class
 com\example\Backup$SourceReference.class
 com\example\Backup.class
 com\example\Backup$PendingChannelRequest.class

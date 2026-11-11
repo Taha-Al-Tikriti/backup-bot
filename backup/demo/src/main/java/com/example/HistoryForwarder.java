@@ -256,7 +256,7 @@ public final class HistoryForwarder implements AutoCloseable {
             throws InterruptedException {
         long waitSeconds = exception.retryAfterSeconds() + 1;
         LOGGER.warning("Telegram rate-limited source message " + sourceMessageId
-                + "; waiting " + waitSeconds + " seconds before pausing for user confirmation.");
+                + "; waiting " + waitSeconds + " seconds before automatically rechecking and resuming.");
         TimeUnit.SECONDS.sleep(waitSeconds);
         return new RateLimitWaitCompletedException(sourceMessageId);
     }

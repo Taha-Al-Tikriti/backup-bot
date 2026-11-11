@@ -208,7 +208,7 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 startMessage = "Backup started. I’m checking the destination and forwarding missing posts in source order. A new heading will be posted. Send /cancel to stop.";
             }
             sendText(chatId, startMessage);
-            jobExecutor.execute(() -> forwardHistory(chatId, session, resume));
+            jobExecutor.execute(() -> forwardHistory(chatId, session, resume, new ForwardProgress()));
             return;
         }
 
@@ -833,9 +833,8 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         }
     }
 
-    private void forwardHistory(long chatId, BackSession session, boolean resume) {
-        Set<Long> forwardedSourceIdsDuringRun = new HashSet<>();
-        int skipped = 0;
+    private void forwardHistory(long chatId, BackSession session, boolean resume, ForwardProgress progress) {
+        boolean continuationScheduled = false;
         try {
             if (sessions.get(chatId) != session) {
                 return;
@@ -904,17 +903,17 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 if (!missing.isEmpty()) {
                     HistoryForwarder.ForwardResult result = historyForwarder.forwardMessages(
                             session.sourceChatId, session.destinationChatId, missing);
-                    forwardedSourceIdsDuringRun.addAll(result.forwardedSourceMessageIds());
-                    skipped += result.skipped();
+                    progress.forwardedSourceIds.addAll(result.forwardedSourceMessageIds());
+                    progress.skipped += result.skipped();
                     verifiedSourceIds.addAll(result.forwardedSourceMessageIds());
                 }
                 checkpoint = checkpoint.withProgress(end, checkpoint.headingMessageId());
                 checkpointStore.save(checkpoint);
                 session.checkpoint = checkpoint;
 
-                if (!forwardedSourceIdsDuringRun.isEmpty()
-                        && forwardedSourceIdsDuringRun.size() % 1000 < FORWARD_BATCH_SIZE) {
-                    sendText(chatId, "Telegram confirmed " + forwardedSourceIdsDuringRun.size() + " unique source posts sent during this run.");
+                if (!progress.forwardedSourceIds.isEmpty()
+                        && progress.forwardedSourceIds.size() % 1000 < FORWARD_BATCH_SIZE) {
+                    sendText(chatId, "Telegram confirmed " + progress.forwardedSourceIds.size() + " unique source posts sent during this run.");
                 }
             }
 
@@ -928,13 +927,13 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
                 if (session.syncOnly) {
                     sendText(chatId, "Sync complete and verified: all " + session.messageIds.size()
                             + " source posts are present in the destination. Added "
-                            + forwardedSourceIdsDuringRun.size()
-                            + " missing posts in source order; Telegram could not forward " + skipped + ".");
+                            + progress.forwardedSourceIds.size()
+                            + " missing posts in source order; Telegram could not forward " + progress.skipped + ".");
                 } else {
                     sendText(chatId, "Finished and verified: all " + session.messageIds.size()
                             + " source posts are present in the destination. Newly forwarded: "
-                            + forwardedSourceIdsDuringRun.size()
-                            + "; Telegram could not forward " + skipped + ".");
+                            + progress.forwardedSourceIds.size()
+                            + "; Telegram could not forward " + progress.skipped + ".");
                 }
             } else {
                 checkpoint = checkpoint.withProgress(session.messageIds.size(), checkpoint.headingMessageId());
@@ -956,26 +955,22 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
             }
         } catch (HistoryForwarder.RateLimitWaitCompletedException exception) {
             if (sessions.get(chatId) == session) {
-                session.stage = Stage.CONFIRM;
-                if (session.syncOnly) {
-                    sendText(chatId, "Telegram's rate-limit wait has ended. The sync is paused. Reply /confirm to recheck the destination and continue, or /cancel to stop.");
-                } else if (session.checkpoint != null) {
-                    sendText(chatId, "Telegram's rate-limit wait has ended. The backup is paused. Reply /resume to check the destination for posts already forwarded and continue with any missing posts, or /cancel to stop.");
-                } else {
-                    sendText(chatId, "Telegram's rate-limit wait has ended, but the backup checkpoint is unavailable. Start /back again and choose the same source and destination to retry safely.");
-                }
-                LOGGER.log(Level.INFO, "Telegram rate-limit wait ended; paused "
-                        + (session.syncOnly ? "sync" : "backup") + " for user confirmation.", exception);
+                sendText(chatId, "Telegram's rate-limit wait has ended. Automatically rechecking the destination "
+                        + "and continuing with any missing posts. Send /cancel to stop.");
+                jobExecutor.execute(() -> forwardHistory(chatId, session, true, progress));
+                continuationScheduled = true;
+                LOGGER.info("Telegram rate-limit wait ended; automatically rechecking and continuing "
+                        + (session.syncOnly ? "sync" : "backup") + ". " + exception.getMessage());
             }
         } catch (Exception exception) {
             sendText(chatId, (session.syncOnly ? "Sync" : "Backup forwarding") + " stopped. Telegram confirmed "
-                    + forwardedSourceIdsDuringRun.size() + " unique source posts sent during this run; the last attempted post may also have reached the destination. "
+                    + progress.forwardedSourceIds.size() + " unique source posts sent during this run; the last attempted post may also have reached the destination. "
                     + "Reason: " + rootCauseMessage(exception)
                     + " Check the destination before retrying; a resume or sync will check for posts already present.");
             LOGGER.log(Level.WARNING, (session.syncOnly ? "History sync" : "History forwarding")
-                    + " stopped after " + forwardedSourceIdsDuringRun.size() + " confirmed unique posts.", exception);
+                    + " stopped after " + progress.forwardedSourceIds.size() + " confirmed unique posts.", exception);
         } finally {
-            if (session.stage != Stage.CONFIRM) {
+            if (session.stage != Stage.CONFIRM && !continuationScheduled) {
                 sessions.remove(chatId, session);
             }
         }
@@ -1148,6 +1143,11 @@ public class Backup extends TelegramLongPollingBot implements AutoCloseable {
         private volatile List<Long> messageIds = List.of();
         private BackupCheckpointStore.Checkpoint checkpoint;
         private boolean syncOnly;
+    }
+
+    private static final class ForwardProgress {
+        private final Set<Long> forwardedSourceIds = new HashSet<>();
+        private int skipped;
     }
 
     private record PendingDelete(long chatId, int firstMessageId, int lastMessageId, long expiresAtMillis) {
